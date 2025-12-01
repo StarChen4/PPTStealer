@@ -2,6 +2,8 @@
 
 基于 FastAPI + React 的 Web 工具：输入微信公众号文章链接，自动抓取文章中的 PPT 图片并生成 A4 横向 PDF。
 
+![页面预览](assets/Preview.png)
+
 ## 目录结构
 - `api/`：后端 FastAPI 服务
 - `web/`：前端 React (Vite)
