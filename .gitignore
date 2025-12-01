@@ -1,0 +1,27 @@
+# Virtual environment
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.log
+.python-version
+
+# FastAPI/uvicorn
+*.db
+instance/
+
+# Node / Vite
+node_modules/
+dist/
+*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
