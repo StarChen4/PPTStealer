@@ -170,6 +170,96 @@ async def process(req: ProcessRequest):
     return StreamingResponse(io.BytesIO(pdf_bytes), media_type="application/pdf", headers=headers)
 
 
+@app.post("/process-stream")
+async def process_stream(req: ProcessRequest):
+    """SSE流式返回处理进度和结果"""
+    import json
+    import base64
+
+    async def event_generator():
+        filters = req.filters or FilterSettings()
+
+        try:
+            # 阶段1: 获取HTML (0-10%)
+            yield 'data: {"stage": "fetching_html", "progress": 0, "message": "获取文章HTML"}\n\n'
+
+            async with httpx.AsyncClient(timeout=30) as client:
+                html = await fetch_html(client, str(req.url))
+
+            yield 'data: {"stage": "fetching_html", "progress": 10, "message": "已获取文章内容"}\n\n'
+
+            # 阶段2: 提取URL (10-20%)
+            yield 'data: {"stage": "extracting_urls", "progress": 10, "message": "解析图片链接"}\n\n'
+            urls = extract_image_urls(html)
+            if not urls:
+                yield 'data: {"stage": "error", "error": "未找到图片标签", "error_type": "no_images"}\n\n'
+                return
+
+            yield f'data: {json.dumps({"stage": "extracting_urls", "progress": 20, "message": f"找到 {len(urls)} 张图片", "total_found": len(urls)}, ensure_ascii=False)}\n\n'
+
+            # 阶段3: 域名过滤 (20-25%)
+            yield 'data: {"stage": "filtering_domains", "progress": 20, "message": "域名过滤中"}\n\n'
+            urls = [u for u in urls if domain_allowed(u, filters.allowed_domains)]
+            if not urls:
+                yield 'data: {"stage": "error", "error": "过滤后没有图片 URL", "error_type": "filtered_out"}\n\n'
+                return
+
+            yield f'data: {json.dumps({"stage": "filtering_domains", "progress": 25, "message": f"保留 {len(urls)} 张图片", "after_domain": len(urls)}, ensure_ascii=False)}\n\n'
+
+            # 阶段4: 边缘裁剪 (25-30%)
+            yield 'data: {"stage": "trimming_edges", "progress": 25, "message": "去除首尾图片"}\n\n'
+            urls = apply_edge_trimming(urls, filters.trim_leading, filters.trim_trailing)
+            if not urls:
+                yield 'data: {"stage": "error", "error": "裁剪后没有图片", "error_type": "trimmed_all"}\n\n'
+                return
+
+            yield f'data: {json.dumps({"stage": "trimming_edges", "progress": 30, "message": f"剩余 {len(urls)} 张图片", "after_trim": len(urls)}, ensure_ascii=False)}\n\n'
+
+            # 阶段5: 下载图片 (30-80%)
+            kept_images = []
+            total_urls = len(urls)
+
+            async with httpx.AsyncClient(timeout=30) as client:
+                for i, url in enumerate(urls):
+                    progress = 30 + int((i / total_urls) * 50)
+                    yield f'data: {json.dumps({"stage": "downloading_images", "progress": progress, "current": i + 1, "total": total_urls, "passed": len(kept_images), "message": "下载并验证图片"}, ensure_ascii=False)}\n\n'
+
+                    try:
+                        img_bytes = await download_image(client, url, str(req.url))
+                        if image_passes_filters(img_bytes, filters):
+                            kept_images.append(img_bytes)
+                    except Exception:
+                        continue
+
+            if not kept_images:
+                yield 'data: {"stage": "error", "error": "没有符合条件的 PPT 图片", "error_type": "no_valid_images"}\n\n'
+                return
+
+            yield f'data: {json.dumps({"stage": "downloading_images", "progress": 80, "current": total_urls, "total": total_urls, "passed": len(kept_images), "message": "图片下载完成"}, ensure_ascii=False)}\n\n'
+
+            # 阶段6: 生成PDF (80-95%)
+            total_pages = len(kept_images)
+            yield f'data: {json.dumps({"stage": "generating_pdf", "progress": 80, "message": "开始生成PDF", "total_pages": total_pages}, ensure_ascii=False)}\n\n'
+
+            # 生成PDF（简化方案：只在开始和结束发送进度）
+            pdf_bytes = build_pdf(kept_images)
+
+            yield 'data: {"stage": "generating_pdf", "progress": 95, "message": "PDF生成完成"}\n\n'
+
+            # 阶段7: 完成 (100%)
+            pdf_b64 = base64.b64encode(pdf_bytes).decode('utf-8')
+            yield f'data: {json.dumps({"stage": "completed", "progress": 100, "message": "处理完成", "pdf_data": pdf_b64, "filename": "ppt.pdf"}, ensure_ascii=False)}\n\n'
+
+        except httpx.HTTPStatusError as exc:
+            error_msg = json.dumps({"stage": "error", "error": "无法获取文章内容", "error_type": "fetch_failed", "status_code": exc.response.status_code}, ensure_ascii=False)
+            yield f'data: {error_msg}\n\n'
+        except Exception as exc:
+            error_msg = json.dumps({"stage": "error", "error": str(exc), "error_type": "unknown"}, ensure_ascii=False)
+            yield f'data: {error_msg}\n\n'
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}

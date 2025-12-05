@@ -171,8 +171,10 @@ input:focus {
   color: var(--danger);
   background: rgba(255, 107, 139, 0.08);
   border: 1px solid rgba(255, 107, 139, 0.3);
-  padding: 12px 14px;
+  padding: 14px 16px;
   border-radius: 10px;
+  white-space: pre-line;
+  line-height: 1.6;
 }
 
 .download-card {
@@ -186,6 +188,75 @@ input:focus {
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+/* 状态卡片 */
+.status-card {
+  margin-top: 18px;
+  padding: 20px;
+  border-radius: 14px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
+}
+
+.status-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.status-emoji {
+  font-size: 24px;
+}
+
+.status-title {
+  font-weight: 600;
+  font-size: 16px;
+  color: var(--text);
+}
+
+/* 进度条 */
+.progress-bar-container {
+  width: 100%;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  border-radius: 10px;
+  transition: width 0.3s ease;
+  box-shadow: 0 0 15px rgba(94, 225, 255, 0.4);
+}
+
+/* 状态文字 */
+.status-text {
+  color: var(--muted);
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 状态提示 */
+.status-hint {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.status-hint.warning {
+  background: rgba(255, 165, 0, 0.1);
+  border: 1px solid rgba(255, 165, 0, 0.3);
+  color: #ffb84d;
 }
 
 @media (max-width: 640px) {

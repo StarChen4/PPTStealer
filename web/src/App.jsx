@@ -20,6 +20,14 @@ function App() {
   const [filename, setFilename] = useState("ppt.pdf");
   const [showAdvanced, setShowAdvanced] = useState(false);
 
+  // 新增：状态显示相关状态
+  const [statusVisible, setStatusVisible] = useState(false);
+  const [stage, setStage] = useState("idle");
+  const [progress, setProgress] = useState(0);
+  const [statusMessage, setStatusMessage] = useState("");
+  const [statusDetails, setStatusDetails] = useState({});
+  const [useSSE, setUseSSE] = useState(true);
+
   const filterList = useMemo(
     () => [
       { key: "min_width", label: "最小宽度 (px)" },
@@ -37,21 +45,107 @@ function App() {
     setFilters((prev) => ({ ...prev, [key]: value }));
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+  // Base64转Blob
+  const base64ToBlob = (base64, type) => {
+    const binary = atob(base64);
+    const array = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      array[i] = binary.charCodeAt(i);
+    }
+    return new Blob([array], { type });
+  };
+
+  // 错误信息增强
+  const getEnhancedErrorMessage = (error, errorType) => {
+    const errorMap = {
+      no_images: "❌ 文章中未找到图片\n💡 可能原因：\n• 文章不包含PPT图片\n• 页面未完全加载\n• 文章格式不支持",
+      filtered_out: "❌ 域名过滤后无图片\n💡 建议操作：\n• 检查「允许域名」设置\n• 尝试添加更多域名\n• 关闭域名过滤功能",
+      no_valid_images: "❌ 没有符合过滤条件的图片\n💡 建议调整：\n• 降低「最小宽度/高度」\n• 扩大「宽高比」范围\n• 减少「去除张数」设置",
+      fetch_failed: "❌ 无法获取文章内容\n💡 请检查：\n• URL是否正确完整\n• 文章是否已被删除\n• 网络连接是否正常"
+    };
+
+    return errorMap[errorType] || `❌ ${error}`;
+  };
+
+  // SSE处理函数
+  const handleSubmitWithSSE = async (urlValue, filtersValue) => {
+    setStatusVisible(true);
+    setStage("idle");
+    setProgress(0);
     setError("");
     setDownloadUrl("");
-    setLoading(true);
 
+    try {
+      const response = await fetch("/api/process-stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: urlValue, filters: filtersValue })
+      });
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop(); // 保留不完整的行
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const data = JSON.parse(line.slice(6));
+
+            setStage(data.stage);
+            setProgress(data.progress || 0);
+            setStatusMessage(data.message || "");
+            setStatusDetails({
+              current: data.current,
+              total: data.total,
+              passed: data.passed,
+              totalFound: data.total_found,
+              currentPage: data.current_page,
+              totalPages: data.total_pages
+            });
+
+            // 处理完成
+            if (data.stage === "completed") {
+              const pdfBlob = base64ToBlob(data.pdf_data, "application/pdf");
+              const pdfUrl = URL.createObjectURL(pdfBlob);
+              setDownloadUrl(pdfUrl);
+              setFilename(data.filename || "ppt.pdf");
+            }
+
+            // 处理错误
+            if (data.stage === "error") {
+              setError(getEnhancedErrorMessage(data.error, data.error_type));
+              setStatusVisible(false);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error("SSE处理失败，降级到普通模式", err);
+      setUseSSE(false);
+      setStatusVisible(false);
+      // 降级到原有的fetch方式
+      await handleSubmitClassic(urlValue, filtersValue);
+    }
+  };
+
+  // 原有的Classic模式（降级方案）
+  const handleSubmitClassic = async (urlValue, filtersValue) => {
     try {
       const resp = await fetch("/api/process", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          url,
+          url: urlValue,
           filters: {
-            ...filters,
-            allowed_domains: filters.allowed_domains,
+            ...filtersValue,
+            allowed_domains: filtersValue.allowed_domains,
           },
         }),
       });
@@ -73,6 +167,23 @@ function App() {
       const urlObj = URL.createObjectURL(blob);
       setDownloadUrl(urlObj);
     } catch (err) {
+      throw err;
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError("");
+    setDownloadUrl("");
+    setLoading(true);
+
+    try {
+      if (useSSE) {
+        await handleSubmitWithSSE(url, filters);
+      } else {
+        await handleSubmitClassic(url, filters);
+      }
+    } catch (err) {
       setError(err.message || "发生未知错误");
     } finally {
       setLoading(false);
@@ -81,6 +192,66 @@ function App() {
 
   const resetFilters = () => {
     setFilters(defaultFilters);
+  };
+
+  const renderStatusCard = () => {
+    if (!statusVisible) return null;
+
+    const stageEmojis = {
+      fetching_html: "📄",
+      extracting_urls: "🔍",
+      filtering_domains: "🎯",
+      trimming_edges: "✂️",
+      downloading_images: "⬇️",
+      generating_pdf: "📑",
+      completed: "✅"
+    };
+
+    const stageNames = {
+      fetching_html: "获取文章HTML",
+      extracting_urls: "解析图片链接",
+      filtering_domains: "域名过滤",
+      trimming_edges: "边缘裁剪",
+      downloading_images: "下载并验证图片",
+      generating_pdf: "生成PDF文档",
+      completed: "处理完成"
+    };
+
+    const emoji = stageEmojis[stage] || "⏳";
+    const stageName = stageNames[stage] || statusMessage;
+
+    // 构建详细信息
+    let detailText = "";
+    if (stage === "downloading_images" && statusDetails.total) {
+      detailText = `（已通过 ${statusDetails.passed || 0}/${statusDetails.total} 张）`;
+    } else if (stage === "generating_pdf" && statusDetails.totalPages) {
+      detailText = `（第 ${statusDetails.currentPage || 0}/${statusDetails.totalPages} 页）`;
+    } else if (stage === "extracting_urls" && statusDetails.totalFound) {
+      detailText = `（找到 ${statusDetails.totalFound} 张）`;
+    }
+
+    return (
+      <div className="status-card">
+        <div className="status-header">
+          <span className="status-emoji">{emoji}</span>
+          <span className="status-title">处理状态</span>
+        </div>
+
+        <div className="progress-bar-container">
+          <div className="progress-bar" style={{ width: `${progress}%` }}></div>
+        </div>
+
+        <div className="status-text">
+          {emoji} {stageName}{detailText} {progress}%
+        </div>
+
+        {stage === "completed" && (
+          <div className="status-hint warning">
+            ⚠️ 提示：生成的PPT内容过多时，下载需要等待较长时间，请耐心等待
+          </div>
+        )}
+      </div>
+    );
   };
 
   const renderDownload = () => {
@@ -173,6 +344,8 @@ function App() {
 
           {error && <div className="error">{error}</div>}
         </form>
+
+        {renderStatusCard()}
 
         {renderDownload()}
       </main>
